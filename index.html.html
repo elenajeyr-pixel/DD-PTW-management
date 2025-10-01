@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PTW Management</title>
+
+  <!-- Keep your existing external CSS if you prefer -->
+  <link rel="stylesheet" href="style.css">
+
+  <!-- iOS Home Screen Icon -->
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="/icons/apple-touch-icon-152x152.png">
+  <link rel="apple-touch-icon" sizes="120x120" href="/icons/apple-touch-icon-120x120.png">
+  <link rel="apple-touch-icon" sizes="76x76" href="/icons/apple-touch-icon-76x76.png">
+
+  <!-- Android Home Screen Icon -->
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/android-chrome-192x192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="/icons/android-chrome-512x512.png">
+
+  <!-- Manifest file for Android -->
+  <link rel="manifest" href="/manifest.json">
+
+  <!-- QRCode library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  <style>
+    /* Minimal extras so it also looks fine if style.css is missing */
+    body { font-family: Arial, sans-serif; background:#f4f4f4; margin:0; }
+    .container { background:#fff; margin:20px auto; padding:32px; max-width:700px; border-radius:8px; box-shadow:0 0 12px rgba(0,0,0,0.07); }
+    h1 { text-align:center; margin-bottom:24px; }
+    label { display:block; margin-top:16px; margin-bottom:4px; }
+    input[type="text"], input[type="datetime-local"], select { width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; background:#fafafa; box-sizing:border-box; }
+    .error { color:#d33; font-size:0.95rem; }
+    .hidden { display:none; }
+    .qr-section { display:flex; align-items:flex-start; gap:24px; margin-top:24px; background:#f8f9fa; border-radius:10px; padding:18px; }
+    .qr-box { background:#fff; padding:8px; display:inline-block; border:1px solid #e5e7eb; }
+    #qrcode canvas, #qrcode img { width:256px; height:256px; }
+    #nightshift_options { gap:16px; align-items:center; }
+    #nightshift_options label { display:inline-flex; align-items:center; }
+    .qr-description { word-break:break-all; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .actions { display:flex; gap:12px; margin-top:16px; }
+    input[type="submit"], input[type="reset"] { padding:10px 18px; border:none; border-radius:6px; cursor:pointer; color:#fff; background:#4379ff; }
+    input[type="reset"] { background:#6b7cff; }
+  </style>
+
+  <script>
+    // === Feature parity helpers from Code 1 (kept) + upgrades from Code 2 ===
+
+    function toggleRescuePoint() {
+      const ptwType = document.getElementById('ptw_type').value;
+      const rescuePointSection = document.getElementById('rescue_point_section');
+      // Only Enclosed Space requires rescue point information
+      rescuePointSection.style.display = (ptwType === 'Enclosed Space') ? 'block' : 'none';
+    }
+
+    function setDefaults() {
+      const now = new Date();
+      const nextDay = new Date(now);
+      nextDay.setDate(now.getDate() + 1);
+      nextDay.setHours(8, 0, 0, 0);
+
+      const endDay = new Date(nextDay);
+      endDay.setHours(16, 0, 0, 0);
+
+      const startInput = document.getElementById('ptw_start');
+      const endInput = document.getElementById('ptw_end');
+
+      startInput.value = toLocalDatetimeValue(nextDay);
+      endInput.value = toLocalDatetimeValue(endDay);
+
+      // Enforce hour-only on load
+      forceHourOnly('ptw_start');
+      forceHourOnly('ptw_end');
+    }
+
+    // Convert a Date to yyyy-MM-ddTHH:00 for datetime-local
+    function toLocalDatetimeValue(date) {
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const d = String(date.getDate()).padStart(2, '0');
+      const h = String(date.getHours()).padStart(2, '0');
+      return `${y}-${m}-${d}T${h}:00`;
+    }
+
+    // Clamp any input datetime-local to top of hour (mm=00)
+    function normalizeToTopOfHour(val) {
+      if (!val || !val.includes('T')) return val;
+      const [date, time] = val.split('T');
+      const [hour] = time.split(':');
+      return `${date}T${hour.padStart(2, '0')}:00`;
+    }
+    function forceHourOnly(id) {
+      const el = document.getElementById(id);
+      const clamp = () => { el.value = normalizeToTopOfHour(el.value); };
+      el.addEventListener('input', clamp);
+      el.addEventListener('change', clamp);
+      el.addEventListener('blur', clamp);
+      if (el.value) clamp();
+    }
+
+    function validateDuration() {
+      const startInput = document.getElementById('ptw_start');
+      const endInput   = document.getElementById('ptw_end');
+      const errorMessage = document.getElementById('error_message');
+
+      // Hour-only
+      startInput.value = normalizeToTopOfHour(startInput.value);
+      endInput.value   = normalizeToTopOfHour(endInput.value);
+
+      const start = new Date(startInput.value);
+      const end   = new Date(endInput.value);
+      const duration = (end - start) / (1000 * 60 * 60);
+
+      if (duration > 24) {
+        errorMessage.textContent = "Maximum duration of a Work Permit is 24hrs.";
+        const newEnd = new Date(start);
+        newEnd.setHours(start.getHours() + 24);
+        // Subtract a minute to fit strictly within 24h window if needed
+        newEnd.setMinutes(0);
+        endInput.value = toLocalDatetimeValue(newEnd);
+      } else if (duration < 0) {
+        errorMessage.textContent = "End cannot be before Start.";
+      } else {
+        errorMessage.textContent = "";
+      }
+    }
+
+    function resetForm() {
+      document.getElementById('ptw_type').value = "Hot Work";
+      document.getElementById('work_description').value = "";
+      document.getElementById('department').value = "Deck";
+      document.getElementById('point_of_contact_ship').value = "tba";
+      document.getElementById('name').value = "";
+      document.getElementById('point_of_contact').value = "";
+      document.getElementById('included_workers').value = "";
+      document.getElementById('remarks').value = "";
+      document.getElementById('deck').value = "0";
+      document.getElementById('firezone').value = "1";
+      document.getElementById('location_description').value = "";
+      document.getElementById('rescue_deck').value = "0";
+      document.getElementById('rescue_firezone').value = "1";
+      document.getElementById('rescue_location_description').value = "";
+      document.getElementById('nightshift_required').checked = false;
+
+      setDefaults();
+      // initialize nightshift visibility
+      (function(){ const ns=document.getElementById('nightshift_required'); const nsOptions=document.getElementById('nightshift_options'); nsOptions.style.display = ns.checked ? 'flex' : 'none'; })();
+      toggleRescuePoint();
+
+      // Clear QR preview
+      document.getElementById('qrDisplay').style.display = 'none';
+      document.getElementById('qrcode').innerHTML = '';
+      document.getElementById('qrDescription').textContent = '';
+    }
+
+    // Keep underscore prevention from Code 1
+    function preventUnderscore(event) {
+      const textInputs = document.querySelectorAll('input[type="text"]');
+      for (let i = 0; i < textInputs.length; i++) {
+        if (textInputs[i].value.includes('_')) {
+          event.preventDefault();
+          alert('Inputs cannot contain the "_" character.');
+          return false;
+        }
+      }
+      return true;
+    }
+
+    // Extract [YYYY, MM, DD, HH, mm] from datetime-local value
+    function extractDateParts(dtVal) {
+      if (!dtVal || !dtVal.includes('T')) return ["", "", "", "", ""];
+      const [date, time] = dtVal.split('T');
+      const [yyyy, mm, dd] = date.split('-');
+      const [HH, minute] = time.split(':');
+      const MM = minute || "00";
+      return [yyyy, mm, dd, HH, MM];
+    }
+
+    // Build the EXACT QR string in the order required
+    function buildQrString() {
+      const department = document.getElementById('department').value;
+      const pocShip = document.getElementById('point_of_contact_ship').value;
+      const ptwType = document.getElementById('ptw_type').value;
+      const workDesc = document.getElementById('work_description').value;
+      const company = document.getElementById('name').value;
+      const pocCompany = document.getElementById('point_of_contact').value;
+      const workers = document.getElementById('included_workers').value;
+      const deck = document.getElementById('deck').value;
+      const firezone = document.getElementById('firezone').value;
+      const location = document.getElementById('location_description').value;
+      const remarks = document.getElementById('remarks').value;
+
+      const rescueActive = (ptwType === 'Enclosed Space');
+      const rescueFlag = rescueActive ? "Y" : "N";
+      const rDeck = document.getElementById('rescue_deck').value || "";
+      const rFz   = document.getElementById('rescue_firezone').value || "";
+      const rLoc  = document.getElementById('rescue_location_description').value || "";
+
+      const startVal = normalizeToTopOfHour(document.getElementById('ptw_start').value);
+      const endVal   = normalizeToTopOfHour(document.getElementById('ptw_end').value);
+      const [ys, ms, ds, hs, mins] = extractDateParts(startVal);
+      const [ye, me, de, he, mine] = extractDateParts(endVal);
+
+      let nightshift = "";
+      if (document.getElementById('nightshift_required').checked) {
+        const mode = (document.querySelector('input[name="nightshift_mode"]:checked') || {}).value;
+        nightshift = mode === "DN" ? "DN" : "NO";
+      }
+
+      // EXACT ORDER (underscore-separated)
+      const parts = [
+        department,
+        pocShip,
+        ptwType,
+        workDesc,
+        company,
+        pocCompany,
+        workers,
+        deck,
+        firezone,
+        location,
+        remarks,
+        rescueFlag,
+        rDeck,
+        rFz,
+        rLoc,
+        ys, ms, ds, hs, mins,
+        ye, me, de, he, mine,
+        nightshift
+      ];
+      return parts.join('_');
+    }
+
+    // Create readable multiline content for the QR payload (for human reading inside QR)
+    function buildQrHumanReadable() {
+      const department = document.getElementById('department').value;
+      const pocShip = document.getElementById('point_of_contact_ship').value;
+      const ptwType = document.getElementById('ptw_type').value;
+      const workDesc = document.getElementById('work_description').value;
+      const company = document.getElementById('name').value;
+      const pocCompany = document.getElementById('point_of_contact').value;
+      const workers = document.getElementById('included_workers').value;
+      const deck = document.getElementById('deck').value;
+      const firezone = document.getElementById('firezone').value;
+      const location = document.getElementById('location_description').value;
+      const remarks = document.getElementById('remarks').value;
+      const rescueActive = (ptwType === 'Enclosed Space');
+      const rDeck = document.getElementById('rescue_deck').value || "";
+      const rFz   = document.getElementById('rescue_firezone').value || "";
+      const rLoc  = document.getElementById('rescue_location_description').value || "";
+
+      const startVal = normalizeToTopOfHour(document.getElementById('ptw_start').value);
+      const endVal   = normalizeToTopOfHour(document.getElementById('ptw_end').value);
+      const [ys, ms, ds, hs, mins] = extractDateParts(startVal);
+      const [ye, me, de, he, mine] = extractDateParts(endVal);
+
+      let nightshift = "";
+      if (document.getElementById('nightshift_required').checked) {
+        const mode = (document.querySelector('input[name="nightshift_mode"]:checked') || {}).value;
+        nightshift = mode === "DN" ? "DN" : "NO";
+      }
+
+      return (
+        `Department: ${department}\n` +
+        `Point of Contact Ship: ${pocShip}\n` +
+        `PTW Type: ${ptwType}\n` +
+        `Work Description: ${workDesc}\n` +
+        `Company: ${company}\n` +
+        `Point of Contact Company: ${pocCompany}\n` +
+        `Included Workers: ${workers}\n` +
+        `Deck: ${deck}\n` +
+        `Firezone: ${firezone}\n` +
+        `Location: ${location}\n` +
+        `Remarks: ${remarks}\n` +
+        (ptwType === 'Enclosed Space'
+          ? `Rescue Point: Y\nRescue Deck: ${rDeck}\nRescue Firezone: ${rFz}\nRescue Location: ${rLoc}\n`
+          : `Rescue Point: N\n`) +
+        `Start: ${ys}-${ms}-${ds} ${hs}:${mins}\n` +
+        `End:   ${ye}-${me}-${de} ${he}:${mine}\n` +
+        `Nightshift: ${nightshift}`
+      );
+    }
+
+    function renderQrPreview(qrString, qrReadable) {
+      const qrDiv = document.getElementById('qrcode');
+      const qrDesc = document.getElementById('qrDescription');
+      const qrWrap = document.getElementById('qrDisplay');
+
+      qrDesc.textContent = '_' + qrString + '_';
+      qrDiv.innerHTML = '';
+      new QRCode(qrDiv, { text: qrString, width: 256, height: 256, colorDark: '#000000', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M });
+      qrWrap.style.display = 'block';
+    }
+
+    window.onload = function() {
+      // Nightshift options toggle
+      const nsCheckbox = document.getElementById('nightshift_required');
+      const nsOptions = document.getElementById('nightshift_options');
+      function syncNightshiftVisibility() {
+        nsOptions.style.display = nsCheckbox.checked ? 'flex' : 'none';
+        nsOptions.classList.toggle('hidden', !nsCheckbox.checked);
+      }
+      nsCheckbox.addEventListener('change', syncNightshiftVisibility);
+
+      setDefaults();
+      // initialize nightshift visibility
+      (function(){ const ns=document.getElementById('nightshift_required'); const nsOptions=document.getElementById('nightshift_options'); nsOptions.style.display = ns.checked ? 'flex' : 'none'; })();
+      toggleRescuePoint();
+
+      // Follow Code 1 behavior
+      document.querySelector('form').addEventListener('submit', function(e) {
+        // prevent underscores first
+        if (!preventUnderscore(e)) return;
+
+        // prevent native submit; show QR preview instead
+        e.preventDefault();
+        validateDuration();
+
+        // Start change: always set End = Start + 24h
+        document.getElementById('ptw_start').addEventListener('change', function() {
+          const s = new Date(normalizeToTopOfHour(this.value));
+          if (!isNaN(s)) {
+            const plus24 = new Date(s);
+            plus24.setHours(s.getHours() + 24);
+            document.getElementById('ptw_end').value = toLocalDatetimeValue(plus24);
+            validateDuration();
+          }
+        });
+
+        const qrString = buildQrString();
+        const qrReadable = buildQrHumanReadable();
+        renderQrPreview(qrString, qrReadable);
+      });
+
+      document.getElementById('ptw_type').addEventListener('change', toggleRescuePoint);
+      document.getElementById('ptw_start').addEventListener('change', function(){
+        const s = new Date(normalizeToTopOfHour(this.value));
+        if (!isNaN(s)) {
+          const plus24 = new Date(s);
+          plus24.setHours(s.getHours() + 24);
+          document.getElementById('ptw_end').value = toLocalDatetimeValue(plus24);
+        }
+        validateDuration();
+      });
+      document.getElementById('ptw_end').addEventListener('change', validateDuration);
+
+      // Clear + reset button keeps Code 1's reset behavior
+      document.querySelector('input[type="reset"]').addEventListener('click', function() {
+        setTimeout(resetForm, 0);
+      });
+    };
+  </script>
+</head>
+<body>
+  <div class="container">
+    <h1>PTW Management</h1>
+
+    <form method="post" action="" oninput="toggleRescuePoint(); validateDuration();">
+      <label for="ptw_type">PTW Type:</label>
+      <select id="ptw_type" name="ptw_type">
+        <option value="Hot Work">Hot Work</option>
+        <option value="Enclosed Space">Enclosed Space</option>
+        <option value="Work at Height">Work at Height</option>
+        <option value="Elevator">Elevator</option>
+        <option value="Other">Other</option>
+      </select>
+
+      <label for="work_description">Work Description:</label>
+      <input type="text" id="work_description" name="work_description" maxlength="256" value="">
+
+      <label for="department">Department:</label>
+      <select id="department" name="department">
+        <option value="Deck">Deck</option>
+        <option value="Engine">Engine</option>
+        <option value="Hotel">Hotel</option>
+        <option value="IT">IT</option>
+        <option value="Other">Other</option>
+      </select>
+
+      <div class="hidden">
+      <label for="point_of_contact_ship">Point of Contact Ship:</label>
+      <input type="text" id="point_of_contact_ship" name="point_of_contact_ship" maxlength="100" value="tba">
+      </div>
+
+      <h2>Company</h2>
+      <label for="name">Company's Name:</label>
+      <input type="text" id="name" name="name" maxlength="100" value="">
+
+      <label for="point_of_contact">Supervisor's Name:</label>
+      <input type="text" id="point_of_contact" name="point_of_contact" maxlength="100" value="">
+
+      <label for="included_workers">Included Workers:</label>
+      <input type="text" id="included_workers" name="included_workers" maxlength="100" value="">
+
+      <h2>Location Details</h2>
+      <label for="deck">Deck:</label>
+      <input type="text" id="deck" name="deck" pattern="^([ABC]|([0-9]|1[0-9]|20)|([Vv][Aa][Rr]))$" title="Enter A, B, C, any number 0–20, or Var" maxlength="3" inputmode="text" placeholder="Allowed: A, B, C, 0–20, Var" onfocus="this.dataset.ph=this.placeholder; this.placeholder='';" onblur="if(!this.value){ this.placeholder=this.dataset.ph || 'Allowed: A, B, C, 0–20, Var'; }" />
+      <small id="deckError" style="color:#c00; display:none;">Invalid entry. Allowed: A, B, C, 0–20, Var.</small>
+
+      <label for="firezone">Firezone:</label>
+      <select id="firezone" name="firezone">
+        <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+        <option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option>
+        <option value="var">var</option>
+      </select>
+
+      <label for="location_description">Location Description:</label>
+      <input type="text" id="location_description" name="location_description" maxlength="100" value="">
+
+      <h2>Remarks</h2>
+      <textarea id="remarks" name="remarks" rows="4" maxlength="500" style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; background:#fafafa;"></textarea>
+
+      <div id="rescue_point_section" class="hidden">
+        <h2>Rescue Point</h2>
+        <label for="rescue_deck">Deck:</label>
+        <input type="text" id="rescue_deck" name="rescue_deck" pattern="^([ABC]|([0-9]|1[0-9]|20)|([Vv][Aa][Rr]))$" title="Enter A, B, C, any number 0–20, or Var" maxlength="3" inputmode="text" placeholder="Allowed: A, B, C, 0–20, Var" onfocus="this.dataset.ph=this.placeholder; this.placeholder='';" onblur="if(!this.value){ this.placeholder=this.dataset.ph || 'Allowed: A, B, C, 0–20, Var'; }" />
+      <small id="rescueDeckError" style="color:#c00; display:none;">Invalid entry. Allowed: A, B, C, 0–20, Var.</small>
+
+        <label for="rescue_firezone">Firezone:</label>
+        <select id="rescue_firezone" name="rescue_firezone">
+          <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+          <option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option>
+          <option value="var">var</option>
+        </select>
+
+        <label for="rescue_location_description">Location Description:</label>
+        <input type="text" id="rescue_location_description" name="rescue_location_description" maxlength="100" value="">
+      </div>
+
+      <h2>PTW Start / End</h2>
+      <label for="ptw_start">PTW Start:</label>
+      <input type="datetime-local" id="ptw_start" name="ptw_start">
+
+      <label for="ptw_end">PTW End:</label>
+      <input type="datetime-local" id="ptw_end" name="ptw_end">
+
+      <label for="nightshift_required">Nightshift Required:</label>
+      <input type="checkbox" id="nightshift_required" name="nightshift_required">
+
+      <div id="nightshift_options" class="hidden" style="margin-top:8px;">
+        <label><input type="radio" name="nightshift_mode" value="NO" checked> Only Nightshift</label>
+        <label style="margin-left:16px;"><input type="radio" name="nightshift_mode" value="DN"> Day and Nightshift</label>
+      </div>
+
+
+      <p id="error_message" class="error"></p>
+
+      <div class="actions">
+        <input type="submit" value="Submit">
+        <input type="reset" value="Reset" onclick="resetForm();">
+      </div>
+    </form>
+
+    <!-- QR preview (new) -->
+    <div id="qrDisplay" class="hidden">
+      <div class="qr-section">
+        <div>
+          <strong>QR String:</strong>
+          <div id="qrDescription" class="qr-description"></div>
+        </div>
+        <div class="qr-box"><div id="qrcode"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // After the form element exists (HTML below), augment submit to render QR preview instead of sending
+    (function attachQrSubmitEnhancement() {
+      const form = document.querySelector('form');
+      const qrWrap = document.getElementById('qrDisplay');
+
+      form.addEventListener('submit', function(e) {
+        // preventUnderscore already called in onload submit listener; but keep safety here too
+        if (!preventUnderscore(e)) return;
+        e.preventDefault();
+
+        // Validate duration one more time
+        validateDuration();
+
+        // Build outputs
+        const qrString = buildQrString();
+        const qrReadable = buildQrHumanReadable();
+
+        // Render QR + string
+        document.getElementById('qrcode').innerHTML = '';
+        new QRCode(document.getElementById('qrcode'), { text: qrString, width: 256, height: 256, colorDark: '#000000', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M });
+        document.getElementById('qrDescription').textContent = '_' + qrString + '_';
+        qrWrap.classList.remove('hidden');
+        qrWrap.style.display = 'block';
+      }, { once:false });
+    })();
+  </script>
+
+<script>
+(function(){
+  const ALLOWED = /^([ABC]|([0-9]|1[0-9]|20)|([Vv][Aa][Rr]))$/;
+
+  function setupLiveValidation(inputId, errorId) {
+    const field = document.getElementById(inputId);
+    const error = document.getElementById(errorId);
+    if(!field || !error) return;
+
+    const showError = (msg) => { error.style.display = 'block'; error.textContent = msg; };
+    const hideError = () => { error.style.display = 'none'; };
+
+    function validate() {
+      const v = field.value.trim();
+      if (v === '') { 
+        hideError(); 
+        field.setCustomValidity(''); 
+        return; 
+      }
+      if (ALLOWED.test(v)) {
+        hideError();
+        field.setCustomValidity('');
+      } else {
+        showError('Invalid entry. Allowed: A, B, C, 0–20, Var.');
+        field.setCustomValidity('Invalid entry');
+      }
+    }
+
+    // On input: validate live
+    field.addEventListener('input', validate);
+    // On blur: validate again
+    field.addEventListener('blur', validate);
+
+    // Prevent characters beyond our simple set immediately (letters except ABC, symbols)
+    field.addEventListener('beforeinput', (e) => {
+      if (e.data && !/[0-9aAbBcCvVrR]/.test(e.data)) {
+        e.preventDefault();
+      }
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', function(){
+    setupLiveValidation('deck', 'deckError');
+    setupLiveValidation('rescue_deck', 'rescueDeckError');
+  });
+})();
+</script>
+
+</body>
+</html>
